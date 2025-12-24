@@ -47,3 +47,4 @@ jobs:
           path: |
             recording.webm
             error_debug.png
+            before_turnstile.png
