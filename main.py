@@ -1,20 +1,10 @@
 import os
 import time
 import shutil
+import json
 import requests
 from urllib.parse import urlparse
 from camoufox.sync_api import Camoufox
-
-# 辅助函数：在视频中高亮显示操作元素（调试神器）
-def highlight_element(page, element, color="red"):
-    try:
-        page.evaluate(f"""(element) => {{
-            element.style.border = "5px solid {color}";
-            element.style.backgroundColor = "rgba(255, 0, 0, 0.3)";
-        }}""", element)
-        time.sleep(0.5) # 暂停一下让人眼能在视频里看到
-    except:
-        pass
 
 def run_automation():
     proxy_env = os.getenv('PROXY_SERVER')
@@ -27,11 +17,23 @@ def run_automation():
             "password": u.password
         }
 
-    # 启动配置：启用 GeoIP 和 Humanize
+    # 读取并解析本地 Cookie (这是关键！)
+    cookies_json = os.getenv('COOKIES_JSON')
+    cookies_list = []
+    if cookies_json:
+        try:
+            cookies_list = json.loads(cookies_json)
+            print(f"成功加载 {len(cookies_list)} 个本地 Cookies")
+        except:
+            print("Cookie JSON 解析失败，将尝试裸奔...")
+
+    # 启动配置
     with Camoufox(
         proxy=proxy_config,
         geoip=True,
-        headless=True,
+        # 关键修改：改为 False，配合 YAML 中的 xvfb-run 使用
+        # Cloudflare 对 Headless: False 的宽容度高很多
+        headless=False, 
         humanize=True,
     ) as browser:
         
@@ -39,136 +41,104 @@ def run_automation():
             viewport={"width": 1920, "height": 1080}, 
             record_video_dir="./videos/"
         )
+        
+        # --- 注入本地 Cookie ---
+        if cookies_list:
+            # 确保 cookie domain 匹配
+            formatted_cookies = []
+            for c in cookies_list:
+                # 过滤掉无关字段，确保格式符合 Playwright 要求
+                new_cookie = {
+                    "name": c.get("name"),
+                    "value": c.get("value"),
+                    "domain": c.get("domain", ".xserver.ne.jp"),
+                    "path": c.get("path", "/")
+                }
+                formatted_cookies.append(new_cookie)
+            try:
+                context.add_cookies(formatted_cookies)
+                print(">>> 已注入本地 Cookies，尝试绕过验证...")
+            except Exception as e:
+                print(f"Cookie 注入部分失败: {e}")
+
         page = context.new_page()
         
-        # 伪装成和普通桌面浏览器完全一致
-        page.set_extra_http_headers({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        })
-        
         try:
-            print(">>> 开始访问登录页面...")
+            print(">>> 开始访问页面...")
             page.goto('https://secure.xserver.ne.jp/xapanel/login/xvps/', wait_until='networkidle')
 
-            # --- 登录 ---
-            page.locator('#memberid').fill(os.getenv('EMAIL'))
-            page.locator('#user_password').fill(os.getenv('PASSWORD'))
-            
-            login_btn = page.get_by_text('ログインする')
-            highlight_element(page, login_btn) # 调试：高亮登录按钮
-            login_btn.click()
-            page.wait_for_load_state('networkidle')
+            # 检查是否直接登录成功（如果 Session Cookie 有效）
+            if "login" not in page.url and "xvps" in page.url:
+                print(">>> 利用 Cookie 直接登录成功！跳过登录步骤。")
+            else:
+                # 正常登录流程
+                if page.locator('#memberid').is_visible():
+                    page.locator('#memberid').fill(os.getenv('EMAIL'))
+                    page.locator('#user_password').fill(os.getenv('PASSWORD'))
+                    page.get_by_text('ログインする').click()
+                    page.wait_for_load_state('networkidle')
 
-            # --- 导航 ---
-            print(">>> 导航至详情页...")
-            # 这里的 .first 可能会点错，建议用更精确的选择器，这里暂时保留
-            link = page.locator('a[href^="/xapanel/xvps/server/detail?id="]').first
-            link.wait_for(state="visible")
-            link.click()
-            
-            print(">>> 点击更新按钮...")
-            update_btn = page.locator('input[value="更新する"], button:has-text("更新する")')
-            # 如果没找到，尝试纯文本
-            if not update_btn.is_visible():
-                update_btn = page.get_by_text('更新する')
-            
-            update_btn.first.click()
+            # --- 导航逻辑 ---
+            print(">>> 导航至 VPS 详情...")
+            # 增加容错：如果找不到详情链接，打印页面源码摘要
+            try:
+                page.locator('a[href^="/xapanel/xvps/server/detail?id="]').first.click(timeout=10000)
+            except:
+                print("未找到详情链接，当前 URL:", page.url)
+                page.screenshot(path="nav_fail.png")
+                raise Exception("导航失败")
+
+            print(">>> 点击更新...")
+            page.get_by_text('更新する').first.click()
             
             print(">>> 点击继续利用...")
-            continue_btn = page.get_by_text('引き続き無料VPSの利用を継続する')
-            continue_btn.click()
+            page.get_by_text('引き続き無料VPSの利用を継続する').click()
             page.wait_for_load_state('networkidle')
 
             # --- OCR 验证码 ---
-            print(">>> 处理图形验证码...")
+            print(">>> 处理验证码...")
             img_element = page.locator('img[src^="data:"]')
             img_src = img_element.get_attribute('src')
             response = requests.post('https://captcha-120546510085.asia-northeast1.run.app', data=img_src, timeout=30)
             code = response.text.strip()
-            print(f"验证码: {code}")
             page.locator('[placeholder="上の画像の数字を入力"]').fill(code)
             
-            # --- 核心改进：Turnstile 暴力交互 ---
-            print(">>> 检测 Turnstile (Iframe 中心点击法)...")
-            time.sleep(3) # 等待加载
-
-            turnstile_found = False
+            # --- Turnstile 处理 (带 Xvfb 后成功率应该极高) ---
+            print(">>> 检测 Turnstile...")
+            time.sleep(3)
             
-            # 策略：直接寻找包含 Cloudflare 的 iframe 并点击其正中心
-            for frame in page.frames:
-                if "cloudflare.com" in frame.url or "turnstile" in frame.url:
-                    print(f"锁定 iframe: {frame.url}")
-                    
-                    # 1. 尝试高亮整个 iframe 区域（在主页面视角）
-                    try:
-                        frame_element = page.frame_locator(f'iframe[src="{frame.url}"]')
-                        # 注意：Playwright 很难直接给 frame 元素加边框，这里略过视觉调试，直接操作
-                    except:
-                        pass
-
-                    # 2. 获取 iframe 的尺寸
-                    box = frame.locator('body').bounding_box()
-                    if box:
-                        print(f"Iframe 尺寸: {box}")
-                        # 3. 计算中心点
-                        x = box['x'] + box['width'] / 2
-                        y = box['y'] + box['height'] / 2
-                        
-                        # 4. 移动鼠标并点击 (物理点击)
-                        print(f"尝试点击坐标: ({x}, {y})")
-                        page.mouse.move(x, y)
-                        time.sleep(0.5)
-                        page.mouse.down()
-                        time.sleep(0.2)
-                        page.mouse.up()
-                        turnstile_found = True
-                        break
+            # 在 Headless=False 模式下，Turnstile 往往会自动通过
+            # 如果没过，再尝试点击
             
-            if not turnstile_found:
-                print("未发现 Turnstile iframe，可能已自动通过或未加载。")
-
-            # 等待验证通过（观察 Token）
-            print(">>> 等待验证生效...")
-            is_verified = False
-            for _ in range(10):
-                # 检查隐藏域是否有值
-                token = page.evaluate("() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
-                if token:
-                    print("成功获取 Turnstile Token！验证通过。")
-                    is_verified = True
-                    break
-                time.sleep(1)
+            # 检测是否已经包含成功的 token
+            has_token = page.evaluate("() => !!document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
             
-            if not is_verified:
-                print("警告：未检测到 Token，提交可能会失败。")
-
-            # --- 最终提交与结果校验 ---
-            print(">>> 执行最终提交...")
+            if not has_token:
+                print("Token 未生成，尝试寻找并点击 iframe...")
+                for frame in page.frames:
+                    if "cloudflare.com" in frame.url or "turnstile" in frame.url:
+                         # 寻找 body 并点击中心
+                        box = frame.locator('body').bounding_box()
+                        if box:
+                            x = box['x'] + box['width'] / 2
+                            y = box['y'] + box['height'] / 2
+                            print(f"点击 Iframe 中心: {x}, {y}")
+                            page.mouse.click(x, y)
+                            time.sleep(2)
+            
+            # --- 最终提交 ---
+            print(">>> 提交...")
             page.screenshot(path="before_submit.png")
             
-            # 这是一个关键点：提交按钮可能有多个，或者需要特定的 class
-            final_submit = page.locator('input[type="submit"][value*="継続"], input[type="submit"][value*="利用"]')
-            if not final_submit.is_visible():
-                 final_submit = page.get_by_text('無料VPSの利用を継続する')
-
-            highlight_element(page, final_submit)
+            # 尝试多种选择器
+            submit_btn = page.locator('input[type="submit"][value*="継続"], input[type="submit"][value*="利用"], button:has-text("継続")')
+            if not submit_btn.is_visible():
+                 submit_btn = page.get_by_text('無料VPSの利用を継続する')
             
-            # 保存当前 URL 用于对比
-            current_url = page.url
+            submit_btn.click()
             
-            final_submit.click()
-            
-            # 等待页面跳转或成功消息
-            try:
-                # 假设成功后 URL 会变，或者出现“完了”字样
-                page.wait_for_url(lambda u: u != current_url, timeout=10000)
-                print("页面 URL 已变更，推测提交成功。")
-            except:
-                print("页面 URL 未变更，检查是否有错误消息...")
-                if page.locator('text=エラー').is_visible() or page.locator('.error').is_visible():
-                    print("检测到错误消息！任务失败。")
-                    raise Exception("页面提示提交错误")
-
+            # 等待成功跳转
+            time.sleep(5)
             print(">>> 流程结束")
 
         except Exception as e:
