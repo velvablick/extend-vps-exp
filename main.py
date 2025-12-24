@@ -7,6 +7,32 @@ from urllib.parse import urlparse
 from camoufox.sync_api import Camoufox
 from playwright.sync_api import TimeoutError
 
+# --- 新增：Telegram 通知函数 ---
+def send_notification(message):
+    token = os.getenv('TELEGRAM_BOT_TOKEN')
+    chat_id = os.getenv('TELEGRAM_CHAT_ID')
+    
+    if not token or not chat_id:
+        print(">>> 缺少 Telegram 配置，跳过通知发送。")
+        return
+
+    print(f">>> 正在发送 Telegram 通知: {message}")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": f"🤖 [Xserver VPS 自动化]\n\n{message}",
+        "parse_mode": "Markdown"
+    }
+    
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            print(">>> 通知发送成功！")
+        else:
+            print(f">>> 通知发送失败: {resp.text}")
+    except Exception as e:
+        print(f">>> 发送通知时发生网络错误: {e}")
+
 def run_automation():
     proxy_env = os.getenv('PROXY_SERVER')
     proxy_config = None
@@ -18,7 +44,6 @@ def run_automation():
             "password": u.password
         }
 
-    # 启动配置
     with Camoufox(
         proxy=proxy_config,
         geoip=True,
@@ -55,7 +80,7 @@ def run_automation():
             except:
                 print(">>> 未检测到登录框，假设已登录...")
 
-            # --- 导航并保存详情页 URL ---
+            # --- 导航 ---
             detail_url = ""
             print(">>> 导航至 VPS 详情...")
             try:
@@ -74,10 +99,11 @@ def run_automation():
             page.get_by_text('引き続き無料VPSの利用を継続する').click()
             page.wait_for_load_state('networkidle')
 
-            # --- 新增检测：是否无需续期 ---
-            # 有时候还没进入验证码页面，就会提示还没到时间
+            # --- 检测点 1：是否无需续期 ---
             if page.get_by_text("利用期限の1日前から更新手続きが可能です").is_visible():
-                print(">>> 任务完成：当前无需续期 (利用期限の1日前から更新手続きが可能です)。")
+                msg = "✅ **检测完毕**\n当前无需续期 (未到期限)。"
+                print(f">>> {msg}")
+                send_notification(msg) # 发送通知
                 return
 
             # --- 验证循环 ---
@@ -98,9 +124,11 @@ def run_automation():
                     page.get_by_text('引き続き無料VPSの利用を継続する').click()
                     page.wait_for_load_state('networkidle')
 
-                    # 重置页面后，再次检测是否无需续期
+                    # 重置后再次检测无需续期
                     if page.get_by_text("利用期限の1日前から更新手続きが可能です").is_visible():
-                        print(">>> 任务完成：当前无需续期 (利用期限の1日前から更新手続きが可能です)。")
+                        msg = "✅ **检测完毕**\n当前无需续期 (未到期限)。"
+                        print(f">>> {msg}")
+                        send_notification(msg) # 发送通知
                         return
 
                 # 1. OCR 识别
@@ -136,8 +164,6 @@ def run_automation():
                                 page.mouse.click(x, y)
                                 break
                     
-                    # 即使这里提示警告，流程也会继续往下走，交给结果分析来判断是否成功
-                    print(">>> 等待 Token 生成 (最多10秒)...")
                     for _ in range(10):
                         time.sleep(1)
                         token = page.evaluate("() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
@@ -145,7 +171,7 @@ def run_automation():
                             print(">>> Token 获取成功！")
                             break
                     else:
-                        print(">>> 警告: 未检测到 Token，尝试强行提交...")
+                        print(">>> 警告: 未检测到 Token...")
 
                 # 3. 提交
                 print(">>> 提交中...")
@@ -158,41 +184,40 @@ def run_automation():
                 except Exception as e:
                     print(f"点击异常(可忽略): {e}")
 
-                # 4. 结果分析 (关键修改)
+                # 4. 结果分析
                 print(">>> 等待结果...")
                 try:
                     for i in range(60):
-                        # --- 成功判定逻辑修正 ---
-                        
-                        # A. 检查明确的成功文字 (修复 strict mode 错误)
-                        # 使用 get_by_text 并指定确切内容，避免匹配到页脚的无关信息
+                        # --- 检测点 2：明确的续期成功 ---
                         if page.get_by_text("利用期限の更新手続きが完了しました。").is_visible():
-                            print(">>> 任务成功！(检测到续期完成提示)")
+                            msg = "🎉 **续期成功！**\nVPS 使用期限已延长。"
+                            print(f">>> {msg}")
+                            send_notification(msg) # 发送通知
                             return
                         
-                        # B. 检查无需续期文字
+                        # --- 检测点 3：无需续期 (可能在点击后才跳出来) ---
                         if page.get_by_text("利用期限の1日前から更新手続きが可能です").is_visible():
-                            print(">>> 任务完成：当前无需续期。")
+                            msg = "✅ **检测完毕**\n当前无需续期 (未到期限)。"
+                            print(f">>> {msg}")
+                            send_notification(msg) # 发送通知
                             return
 
-                        # C. 检查 URL 变更 (作为兜底)
+                        # 兜底 URL 检查
                         if "complete" in page.url or "finish" in page.url:
-                            print(">>> 任务成功！(URL变更)")
+                            msg = "🎉 **续期成功！**\n(检测到 URL 变更)"
+                            print(f">>> {msg}")
+                            send_notification(msg)
                             return 
 
-                        # --- 错误判定逻辑 ---
-
-                        # 错误 A: 数字填错了
+                        # 错误处理
                         if page.locator('text=入力された認証コードが正しくありません').is_visible():
-                            print(">>> 检测到【验证码数字错误】。")
+                            print(">>> 【验证码数字错误】。")
                             raise Exception("WrongCode")
 
-                        # 错误 B: 认证失败/Token无效
                         if page.locator('text=認証に失敗しました').is_visible():
-                            print(">>> 检测到【认证失败/Token拒绝】。")
+                            print(">>> 【认证失败/Token拒绝】。")
                             raise Exception("AuthFailed") 
                         
-                        # 错误 C: 页面过期
                         if page.locator('text=期限切れ').is_visible():
                              raise Exception("PageExpired")
 
@@ -202,25 +227,28 @@ def run_automation():
                     
                 except Exception as e:
                     if str(e) == "WrongCode":
-                        print(">>> 正在重试验证码...")
+                        print(">>> 重试验证码...")
                         input_box = page.locator('[placeholder="上の画像の数字を入力"]')
                         input_box.fill("")
                         continue
 
                     if str(e) in ["AuthFailed", "PageExpired"]:
-                        print(">>> 正在执行页面回退...")
+                        print(">>> 执行页面回退...")
                         page.goto(detail_url if detail_url else 'https://secure.xserver.ne.jp', wait_until='networkidle')
                         continue
                         
-                    print(f"未知错误或重试: {e}")
-                    # 如果不是明确的成功，为了保险起见，回退重试
+                    print(f"重试: {e}")
                     page.goto(detail_url if detail_url else 'https://secure.xserver.ne.jp', wait_until='networkidle')
                     continue
             
             raise Exception("所有重试均未成功。")
 
         except Exception as e:
-            print(f"执行异常: {e}")
+            # --- 检测点 4：最终失败通知 ---
+            error_msg = f"❌ **任务失败**\n请检查 GitHub Actions 日志。\n原因: {str(e)}"
+            print(error_msg)
+            send_notification(error_msg) # 发送错误通知
+            
             page.screenshot(path="error_debug.png")
             raise e
         finally:
