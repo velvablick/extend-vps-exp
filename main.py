@@ -18,28 +18,28 @@ def run_automation():
         }
 
     # 2. 启动 Camoufox
-    # 注意：这里只保留属于启动阶段的参数
+    # 这里的参数是 Camoufox 核心封装层处理的
     with Camoufox(
         proxy=proxy_config,
         geoip=True,
         headless=True,
         humanize=True,
-        # i_am_not_a_bot 不在这里设置
+        # 修正：在一些版本中，这些高级配置通过特定的关键字或默认开启
+        # 如果 i_am_not_a_bot 报错，说明该版本已默认集成或更名
     ) as browser:
         
-        # 3. 在创建上下文时设置隐身增强和视频录制
-        # 将 i_am_not_a_bot, block_webrtc 等参数放在这里
+        # 3. 创建上下文
+        # 注意：这里只放 Playwright 原生支持的参数（如 viewport, record_video_dir）
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080}, 
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-            record_video_dir="./videos/",
-            # --- 隐身增强配置移至此处 ---
-            i_am_not_a_bot=True,
-            block_webrtc=True,
-            os="windows",
-            browser="firefox"
+            record_video_dir="./videos/"
         )
         page = context.new_page()
+        
+        # 显式设置 User-Agent 以配合 Windows 伪装
+        page.set_extra_http_headers({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+        })
         
         time.sleep(2) 
     
@@ -49,7 +49,6 @@ def run_automation():
                       wait_until='networkidle', 
                       referer="https://www.google.com/")
     
-            # 模拟随机行为
             page.mouse.move(200, 200) 
             time.sleep(1)
 
@@ -79,10 +78,9 @@ def run_automation():
             
             page.locator('[placeholder="上の画像の数字を入力"]').fill(code)
             
-            print("正在等待 Turnstile 验证并模拟人为操作...")
+            print("正在等待 Turnstile 验证并模拟行为...")
             time.sleep(5) 
             
-            # 模拟人类随机移动鼠标以辅助通过验证
             for i in range(5):
                 page.mouse.move(100 + (i * 50), 100 + (i * 30))
                 time.sleep(0.5)
@@ -98,9 +96,7 @@ def run_automation():
             page.screenshot(path="error_debug.png")
             raise e
         finally:
-            # 获取视频路径
             video = page.video
-            # 必须关闭 context，Playwright 才会将视频从内存写入磁盘
             context.close() 
             
             if video:
