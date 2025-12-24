@@ -158,14 +158,18 @@ def run_automation():
                     if str(e) == "AuthFailed":
                         print(">>> 正在刷新页面以获取新验证码...")
                         # 关键修复 2：Reload 之前，Dialog 监听器会自动处理弹窗
-                        page.reload()
-                        page.wait_for_load_state('networkidle')
-                        # 刷新后稍作等待，让新验证码加载
+                        # --- 核心修复：使用 goto() 代替 reload() ---
+                        # goto() 发起的是 GET 请求，不会触发 "确认重新提交表单" 的弹窗
+                        # 从而避免脚本卡死在阻塞弹窗上
+                        page.goto(page.url, wait_until='networkidle')
+                        
+                        # 刷新后稍作等待，确保新验证码和 Turnstile 初始化
                         time.sleep(3)
                         continue 
                     else:
                         print(f"检查结果时发生未知错误: {e}")
-                        page.reload()
+                        # 这里也建议改用 goto
+                        page.goto(page.url, wait_until='networkidle')
                         continue
             
             raise Exception("所有重试均未成功，请检查 OCR 服务准确率。")
