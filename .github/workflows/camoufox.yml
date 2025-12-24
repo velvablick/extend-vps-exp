@@ -1,10 +1,10 @@
 name: Camoufox Python Version  # 这里的名称要和原来的区分开
 
 on:
-  schedule:
-    - cron: '15 7,15,23 * * *' # 错开 15 分钟运行，避免冲突
-  push:
-    branches: [ main ]
+  #schedule:
+   # - cron: '15 7,15,23 * * *' # 错开 15 分钟运行，避免冲突
+  #push:
+   # branches: [ main ]
   workflow_dispatch:
 
 jobs:
