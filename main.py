@@ -4,7 +4,9 @@ import shutil
 import json
 import requests
 from urllib.parse import urlparse
-from camoufox.sync_api import Camoufox, TimeoutError # 引入 TimeoutError
+from camoufox.sync_api import Camoufox
+# 修正：从 playwright.sync_api 导入 TimeoutError
+from playwright.sync_api import TimeoutError
 
 def run_automation():
     proxy_env = os.getenv('PROXY_SERVER')
@@ -20,7 +22,7 @@ def run_automation():
     with Camoufox(
         proxy=proxy_config,
         geoip=True,
-        headless=False,
+        headless=False, # 配合 xvfb 使用
         humanize=True,
     ) as browser:
         
@@ -43,7 +45,8 @@ def run_automation():
             # --- 登录 ---
             print(">>> 检查登录状态...")
             try:
-                page.wait_for_selector('#memberid, input[name="memberid"]', state='visible', timeout=10000)
+                # 强制等待输入框出现
+                page.wait_for_selector('#memberid, input[name="memberid"]', state='visible', timeout=15000)
                 print(">>> 填充登录信息...")
                 page.locator('#memberid, input[name="memberid"]').fill(os.getenv('EMAIL'))
                 page.locator('#user_password, input[name="user_password"]').fill(os.getenv('PASSWORD'))
@@ -56,7 +59,7 @@ def run_automation():
             print(">>> 导航至 VPS 详情...")
             try:
                 detail_link = page.locator('a[href^="/xapanel/xvps/server/detail?id="]').first
-                detail_link.wait_for(state='visible', timeout=15000)
+                detail_link.wait_for(state='visible', timeout=20000)
                 detail_link.click()
             except:
                 print("当前 URL:", page.url)
@@ -100,31 +103,29 @@ def run_automation():
                                 time.sleep(3)
                                 break
                 
-                # 3. 提交 (核心修改部分)
+                # 3. 提交 (核心修复逻辑)
                 print(">>> 提交中...")
                 submit_btn = page.locator('input[type="submit"][value*="継続"], input[type="submit"][value*="利用"], button:has-text("継続")')
                 if not submit_btn.is_visible():
                      submit_btn = page.get_by_text('無料VPSの利用を継続する')
                 
                 try:
-                    # 关键修改：force=True (无视遮挡), timeout=60000 (延长超时)
-                    # 这样即使页面弹出了 Loading 遮罩，脚本也会认为点击已发出
+                    # force=True 无视遮罩层, timeout=60000 延长等待
                     print(">>> 执行强制点击...")
                     submit_btn.click(force=True, timeout=60000)
                 except TimeoutError:
-                    print(">>> 点击超时，但页面可能正在加载（转圈中），继续检查结果...")
+                    print(">>> 点击超时(TimeoutError)，可能因页面转圈导致，继续检查结果...")
                 except Exception as e:
                     print(f"点击时发生其他错误: {e}")
 
-                # 4. 等待结果 (延长等待时间)
+                # 4. 等待结果
                 print(">>> 等待服务器响应 (最多 60 秒)...")
                 try:
-                    # 等待 URL 变更 (成功) 或 错误消息出现 (失败)
-                    # 我们每秒检查一次，持续 60 秒
+                    # 轮询检查结果
                     for i in range(60):
                         if "complete" in page.url or "finish" in page.url:
                             print(">>> 检测到 URL 变更，任务成功！")
-                            return # 直接结束函数
+                            return 
                         
                         if page.locator('text=完了').is_visible():
                             print(">>> 检测到完成文字，任务成功！")
@@ -132,11 +133,10 @@ def run_automation():
 
                         if page.locator('text=認証に失敗しました').is_visible() or page.locator('.error-message').is_visible():
                             print(">>> 错误：认证失败。")
-                            raise Exception("AuthFailed") # 抛出异常去触发外层的重试
+                            raise Exception("AuthFailed") 
                         
                         time.sleep(1)
                     
-                    # 如果60秒还在转圈
                     print(">>> 60秒后仍在处理，可能已经成功或卡死，截屏保存。")
                     page.screenshot(path="timeout_check.png")
                     
@@ -145,11 +145,10 @@ def run_automation():
                         print(">>> 捕获到认证失败，刷新页面重试...")
                         page.reload()
                         page.wait_for_load_state('networkidle')
-                        continue # 进入下一次 for 循环
+                        continue 
                     else:
                         print(f"等待结果时出错: {e}")
             
-            # 循环结束还没 return，说明失败
             raise Exception("所有重试均未成功。")
 
         except Exception as e:
