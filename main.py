@@ -30,17 +30,17 @@ def run_automation():
     # 强制伪装成更常见的系统配置，减少被标记为虚拟机的概率
     os="windows",              # 模拟 Windows 环境
     browser="firefox",         # 明确指定模拟 Firefox
-) as browser:
-    # 使用 context 级别配置，进一步抹除自动化特征
-    context = browser.new_context(
-        viewport={"width": 1920, "height": 1080}, # 使用更常见的显示分辨率
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-        record_video_dir="./videos/"
-    )
-    page = context.new_page()
-    
-    # 在跳转前增加随机等待，模拟人类打开浏览器的延迟
-    time.sleep(2) 
+    ) as browser:
+        # 使用 context 级别配置，进一步抹除自动化特征
+        context = browser.new_context(
+            viewport={"width": 1920, "height": 1080}, # 使用更常见的显示分辨率
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+            record_video_dir="./videos/"
+        )
+        page = context.new_page()
+        
+        # 在跳转前增加随机等待，模拟人类打开浏览器的延迟
+        time.sleep(2) 
     
         try:
             # 使用真实的引荐来源 (Referer)
