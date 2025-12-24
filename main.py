@@ -112,3 +112,7 @@ def run_automation():
                 video_path = video.path()
                 if os.path.exists(video_path):
                     shutil.copy(video_path, 'recording.webm')
+
+
+if __name__ == "__main__":
+    run_automation()
