@@ -3,6 +3,7 @@ import time
 import shutil
 import json
 import requests
+import random # 新增随机库
 from urllib.parse import urlparse
 from camoufox.sync_api import Camoufox
 from playwright.sync_api import TimeoutError
@@ -18,11 +19,10 @@ def run_automation():
             "password": u.password
         }
 
-    # 启动配置：headless=False 配合 xvfb 是必须的
     with Camoufox(
         proxy=proxy_config,
         geoip=True,
-        headless=False, 
+        headless=False,
         humanize=True,
     ) as browser:
         
@@ -32,7 +32,6 @@ def run_automation():
             ignore_https_errors=True 
         )
         
-        # 坚持使用 Firefox UA，避免指纹冲突
         context.set_extra_http_headers({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0"
         })
@@ -56,7 +55,7 @@ def run_automation():
             except:
                 print(">>> 未检测到登录框，假设已登录...")
 
-            # --- 导航并保存详情页 URL ---
+            # --- 导航 ---
             detail_url = ""
             print(">>> 导航至 VPS 详情...")
             try:
@@ -80,10 +79,9 @@ def run_automation():
             for attempt in range(max_retries):
                 print(f"\n>>> 第 {attempt + 1} 次验证尝试...")
                 
-                # 0. 检查是否需要重置页面
-                # 如果当前不在验证码页，回退到详情页
+                # 0. 页面状态检查与回退
                 if not page.locator('[placeholder="上の画像の数字を入力"]').is_visible():
-                    print(">>> 页面状态重置: 回到详情页重新发起请求...")
+                    print(">>> 页面状态重置: 回到详情页...")
                     if detail_url:
                         page.goto(detail_url, wait_until='networkidle')
                     else:
@@ -112,33 +110,58 @@ def run_automation():
                     print(f"OCR 失败: {e}")
                     continue
 
-                # 2. Turnstile 处理 (核心改进)
-                print(">>> 检测 Turnstile Token...")
+                # 2. Turnstile 处理 (核心升级)
+                print(">>> 检测 Turnstile...")
                 
-                # 尝试获取 Token，如果为空则点击
-                token = page.evaluate("() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
-                
-                if not token:
-                    print("Token 为空，尝试寻找 iframe 并点击...")
+                # 循环检查 + 动态点击
+                token = None
+                # 最多尝试交互 3 次
+                for click_attempt in range(3):
+                    # 先检查 Token 是否已存在
+                    token = page.evaluate("() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
+                    if token:
+                        print(f">>> Token 已获取 (尝试 {click_attempt})")
+                        break
+                    
+                    print(f"Token 为空，执行第 {click_attempt + 1} 次点击策略...")
+                    
+                    # 寻找 iframe
+                    target_frame = None
                     for frame in page.frames:
                         if "cloudflare.com" in frame.url or "turnstile" in frame.url:
-                            box = frame.locator('body').bounding_box()
-                            if box:
-                                x = box['x'] + box['width'] / 2
-                                y = box['y'] + box['height'] / 2
-                                page.mouse.click(x, y)
-                                break
-                    
-                    # 点击后，死等 Token 出现 (最多等 10 秒)
-                    print(">>> 等待 Token 生成...")
-                    for _ in range(10):
-                        time.sleep(1)
-                        token = page.evaluate("() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
-                        if token:
-                            print(">>> Token 获取成功！")
+                            target_frame = frame
                             break
+                    
+                    if target_frame:
+                        box = target_frame.locator('body').bounding_box()
+                        if box:
+                            # 策略 A: 计算中心点，并加入随机偏移
+                            x = box['x'] + box['width'] / 2 + random.uniform(-10, 10)
+                            y = box['y'] + box['height'] / 2 + random.uniform(-10, 10)
+                            
+                            # 策略 B: 拟人化移动鼠标 (steps=10 表示分10步滑过去)
+                            print(f"模拟鼠标滑动至: ({x:.1f}, {y:.1f})")
+                            page.mouse.move(x, y, steps=15)
+                            time.sleep(random.uniform(0.3, 0.7)) # 悬停
+                            
+                            page.mouse.down()
+                            time.sleep(random.uniform(0.1, 0.3)) # 模拟按压时长
+                            page.mouse.up()
+                            
+                            # 点击后等待一阵，给 Turnstile 反应时间
+                            print("点击完成，等待反应...")
+                            for _ in range(5): # 等待 5 秒
+                                time.sleep(1)
+                                token = page.evaluate("() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
+                                if token: 
+                                    break
+                            if token: break
                     else:
-                        print(">>> 警告: 10秒内未生成 Token，本次提交极大概率会失败 (Auth Fail)。")
+                        print("未找到 Turnstile iframe")
+                        time.sleep(2)
+                
+                if not token:
+                    print(">>> 严重警告: 多次尝试点击后仍未获取 Token，本次大概率失败。")
 
                 # 3. 提交
                 print(">>> 提交中...")
@@ -148,10 +171,10 @@ def run_automation():
                 
                 try:
                     submit_btn.click(force=True, timeout=60000)
-                except Exception as e:
-                    print(f"点击异常(可忽略): {e}")
+                except:
+                    pass
 
-                # 4. 结果分析 (区分错误类型)
+                # 4. 结果分析
                 print(">>> 等待结果...")
                 try:
                     for i in range(60):
@@ -159,30 +182,14 @@ def run_automation():
                             print(">>> 任务成功！")
                             return 
 
-                        # 错误 A: 数字填错了 (入力された認証コードが正しくありません)
-                        # 应对: 不刷新页面，直接重填验证码
                         if page.locator('text=入力された認証コードが正しくありません').is_visible():
-                            print(">>> 检测到【验证码数字错误】。")
-                            print(">>> 策略: 保持当前页面，重新识别图片...")
-                            
-                            # 稍微等一下，有时图片会自动刷新，或者我们需要手动清空
-                            input_box = page.locator('[placeholder="上の画像の数字を入力"]')
-                            input_box.fill("")
-                            
-                            # 获取新图片 (如果网页没自动刷，就用旧的再试一次，或者点击图片刷新)
-                            # Xserver 通常验证失败后图片不一定会变，但这里我们假设它没变，先重试
-                            # 为了保险，我们直接跳出等待循环，利用外层循环的逻辑
-                            # 外层循环会检测到“还在验证码页”，然后重新走 OCR 流程
+                            print(">>> 【验证码数字错误】，重试 OCR...")
                             raise Exception("WrongCode")
 
-                        # 错误 B: 认证失败/Token无效 (認証に失敗しました)
-                        # 应对: 必须刷新页面 (回到详情页)
                         if page.locator('text=認証に失敗しました').is_visible():
-                            print(">>> 检测到【认证失败/Token拒绝】。")
-                            print(">>> 策略: Token 无效，必须重置页面。")
+                            print(">>> 【认证失败/Token拒绝】，重置页面...")
                             raise Exception("AuthFailed") 
                         
-                        # 错误 C: 页面过期
                         if page.locator('text=期限切れ').is_visible():
                              raise Exception("PageExpired")
 
@@ -192,18 +199,11 @@ def run_automation():
                     
                 except Exception as e:
                     if str(e) == "WrongCode":
-                        # 数字错了，不需要回退页面，直接进入下一次循环
-                        # 下一次循环开头会检查 `is_visible`，如果还在当前页，就会直接开始 OCR
-                        print(">>> 正在重试验证码...")
                         continue
-
                     if str(e) in ["AuthFailed", "PageExpired"]:
-                        # Token 废了，必须回退
-                        print(">>> 正在执行页面回退...")
-                        # 使用 goto 触发重置逻辑 (外层循环开头会处理)
                         page.goto(detail_url if detail_url else 'https://secure.xserver.ne.jp', wait_until='networkidle')
                         continue
-                        
+                    
                     print(f"未知错误: {e}")
                     page.goto(detail_url if detail_url else 'https://secure.xserver.ne.jp', wait_until='networkidle')
                     continue
