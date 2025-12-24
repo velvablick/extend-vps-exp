@@ -6,7 +6,6 @@ from urllib.parse import urlparse
 from camoufox.sync_api import Camoufox
 
 def run_automation():
-    # 1. 配置代理
     proxy_env = os.getenv('PROXY_SERVER')
     proxy_config = None
     if proxy_env:
@@ -17,7 +16,6 @@ def run_automation():
             "password": u.password
         }
 
-    # 2. 启动 Camoufox
     with Camoufox(
         proxy=proxy_config,
         geoip=True,
@@ -25,28 +23,19 @@ def run_automation():
         humanize=True,
     ) as browser:
         
-        # 3. 创建上下文并配置录屏
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080}, 
             record_video_dir="./videos/"
         )
         page = context.new_page()
-        
-        # 伪装 User-Agent
         page.set_extra_http_headers({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"
         })
         
         try:
             print("正在访问登录页面...")
-            page.goto('https://secure.xserver.ne.jp/xapanel/login/xvps/', 
-                      wait_until='networkidle', 
-                      referer="https://www.google.com/")
+            page.goto('https://secure.xserver.ne.jp/xapanel/login/xvps/', wait_until='networkidle')
     
-            # 初始随机操作
-            page.mouse.move(300, 300) 
-            time.sleep(1)
-
             # --- 登录步骤 ---
             page.locator('#memberid').fill(os.getenv('EMAIL'))
             page.locator('#user_password').fill(os.getenv('PASSWORD'))
@@ -54,91 +43,72 @@ def run_automation():
             page.wait_for_load_state('networkidle')
 
             # --- 导航至更新页面 ---
-            print("正在导航至 VPS 更新页面...")
+            print("正在导航至详情页...")
             page.locator('a[href^="/xapanel/xvps/server/detail?id="]').first.click()
+            page.wait_for_selector('text=更新する', timeout=10000)
             page.get_by_text('更新する').click()
+            page.wait_for_selector('text=引き続き無料VPSの利用を継続する', timeout=10000)
             page.get_by_text('引き続き無料VPSの利用を継続する').click()
             page.wait_for_load_state('networkidle')
 
             # --- 识别验证码 ---
-            print("正在提取并识别图形验证码...")
             img_element = page.locator('img[src^="data:"]')
             img_src = img_element.get_attribute('src')
-            
-            response = requests.post(
-                'https://captcha-120546510085.asia-northeast1.run.app', 
-                data=img_src,
-                timeout=30
-            )
+            response = requests.post('https://captcha-120546510085.asia-northeast1.run.app', data=img_src, timeout=30)
             code = response.text.strip()
-            print(f"识别结果: {code}")
-            
-            # 填入验证码
+            print(f"验证码识别结果: {code}")
             page.locator('[placeholder="上の画像の数字を入力"]').fill(code)
             
-            # --- 核心改进：处理 Turnstile 验证框 ---
-            print("检测到潜在的 Turnstile 验证，正在尝试穿透 iframe...")
-            time.sleep(3) # 等待验证框加载完成
-
-            # 遍历所有 iframe 寻找 Cloudflare 验证页面
-            turnstile_frame = None
-            for frame in page.frames:
-                if "cloudflare.com" in frame.url or "turnstile" in frame.url:
-                    turnstile_frame = frame
+            # --- 核心改进：Turnstile 深度处理 ---
+            print("检测 Turnstile 状态...")
+            # 循环等待验证码完成渲染
+            time.sleep(5) 
+            
+            turnstile_solved = False
+            for _ in range(10): # 最多尝试 20 秒
+                # 检查页面是否生成了 cf-turnstile-response (这是验证成功的标志)
+                token = page.evaluate("() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
+                if token and len(token) > 10:
+                    print("检测到验证 Token，Turnstile 已自动通过或手动识别成功。")
+                    turnstile_solved = True
                     break
-
-            if turnstile_frame:
-                print("成功锁定 Turnstile iframe，准备点击...")
-                # 尝试点击常见的复选框标识符
-                checkbox = turnstile_frame.locator('#checkbox, .ctp-checkbox-container, input[type="checkbox"]')
                 
-                if checkbox.is_visible():
-                    # 获取复选框的坐标位置进行物理点击
-                    box = checkbox.bounding_box()
-                    if box:
-                        # 在复选框中心位置模拟点击
-                        page.mouse.click(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
-                        print("已模拟点击复选框。")
-                    else:
-                        # 如果无法获取 box，尝试直接点击元素
-                        checkbox.click()
-                        print("已直接点击复选框元素。")
-                else:
-                    print("复选框在 iframe 内不可见，可能已自动通过。")
-            else:
-                print("未发现匹配的 Turnstile iframe。")
+                # 如果没通过，尝试寻找 iframe 并点击
+                for frame in page.frames:
+                    if "cloudflare.com" in frame.url:
+                        target = frame.locator('#checkbox, .ctp-checkbox-label')
+                        if target.is_visible():
+                            print("发现复选框，执行点击...")
+                            target.click()
+                            time.sleep(2)
+                
+                print(f"等待验证中... ({_}/10)")
+                time.sleep(2)
 
-            # 验证后的观察期，等待 Token 生效
-            print("进入观察期，模拟人类阅读...")
-            for _ in range(3):
-                page.mouse.move(500, 500 + (_ * 20))
-                time.sleep(1)
+            # --- 最终提交 ---
+            page.screenshot(path="before_final_submit.png")
             
-            # 提交前截屏以便调试
-            page.screenshot(path="before_final_click.png")
+            # 使用更稳健的选择器：尝试 ID 或特定的 Submit 按钮属性
+            # 根据 Xserver VPS 面板，通常是一个 submit 类型的 input 或 button
+            submit_btn = page.locator('input[type="submit"], button[type="submit"]').get_by_text('無料VPSの利用を継続する')
             
-            # --- 提交申请 ---
-            print("尝试执行最终提交...")
-            page.get_by_text('無料VPSの利用を継続する').click()
+            print("尝试执行最终点击...")
+            # 增加 force=True 以防按钮被不可见的元素遮挡
+            submit_btn.click(timeout=10000, force=True)
             
-            # 等待结果跳转
-            time.sleep(5)
-            print("流程执行完毕。")
+            page.wait_for_load_state('networkidle')
+            print("任务成功完成！")
 
         except Exception as e:
-            print(f"执行过程中发生异常: {e}")
+            print(f"执行异常: {e}")
             page.screenshot(path="error_debug.png")
+            # 打印当前所有 frame 方便调试
+            print("Frames:", [f.url for f in page.frames])
             raise e
         finally:
-            # 确保视频文件正确关闭并保存
             video = page.video
             context.close() 
-            
             if video:
                 video_path = video.path()
                 if os.path.exists(video_path):
                     shutil.copy(video_path, 'recording.webm')
-                    print(f"录屏已成功导出至 recording.webm")
-
-if __name__ == "__main__":
-    run_automation()
