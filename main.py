@@ -18,53 +18,50 @@ def run_automation():
         }
 
     # 2. 启动 Camoufox
-    # 这里的参数是 Camoufox 核心封装层处理的
     with Camoufox(
         proxy=proxy_config,
         geoip=True,
         headless=True,
         humanize=True,
-        # 修正：在一些版本中，这些高级配置通过特定的关键字或默认开启
-        # 如果 i_am_not_a_bot 报错，说明该版本已默认集成或更名
     ) as browser:
         
-        # 3. 创建上下文
-        # 注意：这里只放 Playwright 原生支持的参数（如 viewport, record_video_dir）
+        # 3. 创建上下文并配置录屏
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080}, 
             record_video_dir="./videos/"
         )
         page = context.new_page()
         
-        # 显式设置 User-Agent 以配合 Windows 伪装
+        # 伪装 User-Agent
         page.set_extra_http_headers({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
         })
         
-        time.sleep(2) 
-    
         try:
             print("正在访问登录页面...")
             page.goto('https://secure.xserver.ne.jp/xapanel/login/xvps/', 
                       wait_until='networkidle', 
                       referer="https://www.google.com/")
     
-            page.mouse.move(200, 200) 
+            # 初始随机操作
+            page.mouse.move(300, 300) 
             time.sleep(1)
 
-            # --- 业务逻辑开始 ---
+            # --- 登录步骤 ---
             page.locator('#memberid').fill(os.getenv('EMAIL'))
             page.locator('#user_password').fill(os.getenv('PASSWORD'))
             page.get_by_text('ログインする').click()
             page.wait_for_load_state('networkidle')
 
+            # --- 导航至更新页面 ---
             print("正在导航至 VPS 更新页面...")
             page.locator('a[href^="/xapanel/xvps/server/detail?id="]').first.click()
             page.get_by_text('更新する').click()
             page.get_by_text('引き続き無料VPSの利用を継続する').click()
             page.wait_for_load_state('networkidle')
 
-            print("正在识别验证码...")
+            # --- 识别验证码 ---
+            print("正在提取并识别图形验证码...")
             img_element = page.locator('img[src^="data:"]')
             img_src = img_element.get_attribute('src')
             
@@ -76,26 +73,64 @@ def run_automation():
             code = response.text.strip()
             print(f"识别结果: {code}")
             
+            # 填入验证码
             page.locator('[placeholder="上の画像の数字を入力"]').fill(code)
             
-            print("正在等待 Turnstile 验证并模拟行为...")
-            time.sleep(5) 
+            # --- 核心改进：处理 Turnstile 验证框 ---
+            print("检测到潜在的 Turnstile 验证，正在尝试穿透 iframe...")
+            time.sleep(3) # 等待验证框加载完成
+
+            # 遍历所有 iframe 寻找 Cloudflare 验证页面
+            turnstile_frame = None
+            for frame in page.frames:
+                if "cloudflare.com" in frame.url or "turnstile" in frame.url:
+                    turnstile_frame = frame
+                    break
+
+            if turnstile_frame:
+                print("成功锁定 Turnstile iframe，准备点击...")
+                # 尝试点击常见的复选框标识符
+                checkbox = turnstile_frame.locator('#checkbox, .ctp-checkbox-container, input[type="checkbox"]')
+                
+                if checkbox.is_visible():
+                    # 获取复选框的坐标位置进行物理点击
+                    box = checkbox.bounding_box()
+                    if box:
+                        # 在复选框中心位置模拟点击
+                        page.mouse.click(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+                        print("已模拟点击复选框。")
+                    else:
+                        # 如果无法获取 box，尝试直接点击元素
+                        checkbox.click()
+                        print("已直接点击复选框元素。")
+                else:
+                    print("复选框在 iframe 内不可见，可能已自动通过。")
+            else:
+                print("未发现匹配的 Turnstile iframe。")
+
+            # 验证后的观察期，等待 Token 生效
+            print("进入观察期，模拟人类阅读...")
+            for _ in range(3):
+                page.mouse.move(500, 500 + (_ * 20))
+                time.sleep(1)
             
-            for i in range(5):
-                page.mouse.move(100 + (i * 50), 100 + (i * 30))
-                time.sleep(0.5)
+            # 提交前截屏以便调试
+            page.screenshot(path="before_final_click.png")
             
-            page.screenshot(path="before_turnstile.png")
+            # --- 提交申请 ---
+            print("尝试执行最终提交...")
             page.get_by_text('無料VPSの利用を継続する').click()
             
+            # 等待结果跳转
             time.sleep(5)
-            print("任务成功完成！")
+            print("流程执行完毕。")
 
         except Exception as e:
-            print(f"发生错误: {e}")
+            print(f"执行过程中发生异常: {e}")
             page.screenshot(path="error_debug.png")
             raise e
         finally:
+            # 确保视频文件正确关闭并保存
             video = page.video
             context.close() 
             
@@ -103,7 +138,7 @@ def run_automation():
                 video_path = video.path()
                 if os.path.exists(video_path):
                     shutil.copy(video_path, 'recording.webm')
-                    print(f"视频已保存至 recording.webm")
+                    print(f"录屏已成功导出至 recording.webm")
 
 if __name__ == "__main__":
     run_automation()
