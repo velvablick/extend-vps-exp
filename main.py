@@ -17,41 +17,34 @@ def run_automation():
             "password": u.password
         }
 
-    # 2. 启动 Camoufox
-    # 移除了 record_video_dir，增加了 geoip=True
-   with Camoufox(
-    proxy=proxy_config,
-    geoip=True,
-    headless=True,
-    humanize=True,
-    # --- 新增增强配置 ---
-    i_am_not_a_bot=True,       # 启用内置的混淆加固
-    block_webrtc=True,         # 防止 WebRTC 泄露真实 IP
-    # 强制伪装成更常见的系统配置，减少被标记为虚拟机的概率
-    os="windows",              # 模拟 Windows 环境
-    browser="firefox",         # 明确指定模拟 Firefox
+    # 2. 启动 Camoufox (已修复缩进)
+    with Camoufox(
+        proxy=proxy_config,
+        geoip=True,
+        headless=True,
+        humanize=True,
+        i_am_not_a_bot=True,       
+        block_webrtc=True,         
+        os="windows",              
+        browser="firefox",         
     ) as browser:
-        # 使用 context 级别配置，进一步抹除自动化特征
+        # 使用 context 级别配置
         context = browser.new_context(
-            viewport={"width": 1920, "height": 1080}, # 使用更常见的显示分辨率
+            viewport={"width": 1920, "height": 1080}, 
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
             record_video_dir="./videos/"
         )
         page = context.new_page()
         
-        # 在跳转前增加随机等待，模拟人类打开浏览器的延迟
         time.sleep(2) 
     
         try:
-            # 使用真实的引荐来源 (Referer)
+            # 使用真实的引荐来源
             page.goto('https://secure.xserver.ne.jp/xapanel/login/xvps/', 
                       wait_until='networkidle', 
                       referer="https://www.google.com/")
     
-            # --- 针对 Turnstile 的特殊处理 ---
-            # 如果视频中显示卡在验证框，可以尝试显式等待验证框加载
-            # Turnstile 通常在 iframe 中，Camoufox 理论上会自动处理
-            # 但如果卡住，可以尝试移动鼠标到验证框区域
+            # 针对 Turnstile 的模拟行为
             page.mouse.move(200, 200) 
             time.sleep(1)
 
@@ -80,37 +73,35 @@ def run_automation():
             print(f"识别结果: {code}")
             
             page.locator('[placeholder="上の画像の数字を入力"]').fill(code)
-            print("正在尝试通过 Turnstile...")
-            # 等待验证框对应的 iframe 出现
+            
+            print("正在等待 Turnstile 验证...")
             time.sleep(5) 
             
-            # 模拟人类随机移动鼠标，这有助于通过 Turnstile 的行为分析
+            # 模拟人类随机移动鼠标
             for i in range(5):
                 page.mouse.move(100 + (i * 50), 100 + (i * 30))
                 time.sleep(0.5)
             
-            # 如果有显式的复选框，Camoufox 通常会自动处理，但我们可以手动“震慑”一下
             page.screenshot(path="before_turnstile.png")
             page.get_by_text('無料VPSの利用を継続する').click()
             
             time.sleep(5)
             print("任务成功完成！")
-            # --- 业务逻辑结束 ---
 
         except Exception as e:
             print(f"发生错误: {e}")
             page.screenshot(path="error_debug.png")
             raise e
         finally:
-            # 必须先关闭页面/上下文，视频才会完成写入
+            # 保存录屏逻辑
             video = page.video
-            page.close() 
+            context.close() # 必须关闭 context 以释放视频文件锁
             
             if video:
                 video_path = video.path()
-                print(f"视频已录制到: {video_path}")
                 if os.path.exists(video_path):
                     shutil.copy(video_path, 'recording.webm')
+                    print(f"视频已保存至 recording.webm")
 
 if __name__ == "__main__":
     run_automation()
