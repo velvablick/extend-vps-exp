@@ -18,7 +18,7 @@ def run_automation():
             "password": u.password
         }
 
-    # 启动配置：headless=False 配合 xvfb 是必须的
+    # 启动配置
     with Camoufox(
         proxy=proxy_config,
         geoip=True,
@@ -32,7 +32,6 @@ def run_automation():
             ignore_https_errors=True 
         )
         
-        # 坚持使用 Firefox UA，避免指纹冲突
         context.set_extra_http_headers({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0"
         })
@@ -75,13 +74,18 @@ def run_automation():
             page.get_by_text('引き続き無料VPSの利用を継続する').click()
             page.wait_for_load_state('networkidle')
 
+            # --- 新增检测：是否无需续期 ---
+            # 有时候还没进入验证码页面，就会提示还没到时间
+            if page.get_by_text("利用期限の1日前から更新手続きが可能です").is_visible():
+                print(">>> 任务完成：当前无需续期 (利用期限の1日前から更新手続きが可能です)。")
+                return
+
             # --- 验证循环 ---
             max_retries = 10
             for attempt in range(max_retries):
                 print(f"\n>>> 第 {attempt + 1} 次验证尝试...")
                 
                 # 0. 检查是否需要重置页面
-                # 如果当前不在验证码页，回退到详情页
                 if not page.locator('[placeholder="上の画像の数字を入力"]').is_visible():
                     print(">>> 页面状态重置: 回到详情页重新发起请求...")
                     if detail_url:
@@ -93,6 +97,11 @@ def run_automation():
                     page.get_by_text('更新する').first.click()
                     page.get_by_text('引き続き無料VPSの利用を継続する').click()
                     page.wait_for_load_state('networkidle')
+
+                    # 重置页面后，再次检测是否无需续期
+                    if page.get_by_text("利用期限の1日前から更新手続きが可能です").is_visible():
+                        print(">>> 任务完成：当前无需续期 (利用期限の1日前から更新手続きが可能です)。")
+                        return
 
                 # 1. OCR 识别
                 img_element = page.locator('img[src^="data:"]').first
@@ -112,10 +121,8 @@ def run_automation():
                     print(f"OCR 失败: {e}")
                     continue
 
-                # 2. Turnstile 处理 (核心改进)
+                # 2. Turnstile 处理
                 print(">>> 检测 Turnstile Token...")
-                
-                # 尝试获取 Token，如果为空则点击
                 token = page.evaluate("() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
                 
                 if not token:
@@ -129,8 +136,8 @@ def run_automation():
                                 page.mouse.click(x, y)
                                 break
                     
-                    # 点击后，死等 Token 出现 (最多等 10 秒)
-                    print(">>> 等待 Token 生成...")
+                    # 即使这里提示警告，流程也会继续往下走，交给结果分析来判断是否成功
+                    print(">>> 等待 Token 生成 (最多10秒)...")
                     for _ in range(10):
                         time.sleep(1)
                         token = page.evaluate("() => document.querySelector('[name=\"cf-turnstile-response\"]')?.value")
@@ -138,7 +145,7 @@ def run_automation():
                             print(">>> Token 获取成功！")
                             break
                     else:
-                        print(">>> 警告: 10秒内未生成 Token，本次提交极大概率会失败 (Auth Fail)。")
+                        print(">>> 警告: 未检测到 Token，尝试强行提交...")
 
                 # 3. 提交
                 print(">>> 提交中...")
@@ -151,35 +158,38 @@ def run_automation():
                 except Exception as e:
                     print(f"点击异常(可忽略): {e}")
 
-                # 4. 结果分析 (区分错误类型)
+                # 4. 结果分析 (关键修改)
                 print(">>> 等待结果...")
                 try:
                     for i in range(60):
-                        if "complete" in page.url or "finish" in page.url or page.locator('text=完了').is_visible():
-                            print(">>> 任务成功！")
+                        # --- 成功判定逻辑修正 ---
+                        
+                        # A. 检查明确的成功文字 (修复 strict mode 错误)
+                        # 使用 get_by_text 并指定确切内容，避免匹配到页脚的无关信息
+                        if page.get_by_text("利用期限の更新手続きが完了しました。").is_visible():
+                            print(">>> 任务成功！(检测到续期完成提示)")
+                            return
+                        
+                        # B. 检查无需续期文字
+                        if page.get_by_text("利用期限の1日前から更新手続きが可能です").is_visible():
+                            print(">>> 任务完成：当前无需续期。")
+                            return
+
+                        # C. 检查 URL 变更 (作为兜底)
+                        if "complete" in page.url or "finish" in page.url:
+                            print(">>> 任务成功！(URL变更)")
                             return 
 
-                        # 错误 A: 数字填错了 (入力された認証コードが正しくありません)
-                        # 应对: 不刷新页面，直接重填验证码
+                        # --- 错误判定逻辑 ---
+
+                        # 错误 A: 数字填错了
                         if page.locator('text=入力された認証コードが正しくありません').is_visible():
                             print(">>> 检测到【验证码数字错误】。")
-                            print(">>> 策略: 保持当前页面，重新识别图片...")
-                            
-                            # 稍微等一下，有时图片会自动刷新，或者我们需要手动清空
-                            input_box = page.locator('[placeholder="上の画像の数字を入力"]')
-                            input_box.fill("")
-                            
-                            # 获取新图片 (如果网页没自动刷，就用旧的再试一次，或者点击图片刷新)
-                            # Xserver 通常验证失败后图片不一定会变，但这里我们假设它没变，先重试
-                            # 为了保险，我们直接跳出等待循环，利用外层循环的逻辑
-                            # 外层循环会检测到“还在验证码页”，然后重新走 OCR 流程
                             raise Exception("WrongCode")
 
-                        # 错误 B: 认证失败/Token无效 (認証に失敗しました)
-                        # 应对: 必须刷新页面 (回到详情页)
+                        # 错误 B: 认证失败/Token无效
                         if page.locator('text=認証に失敗しました').is_visible():
                             print(">>> 检测到【认证失败/Token拒绝】。")
-                            print(">>> 策略: Token 无效，必须重置页面。")
                             raise Exception("AuthFailed") 
                         
                         # 错误 C: 页面过期
@@ -192,19 +202,18 @@ def run_automation():
                     
                 except Exception as e:
                     if str(e) == "WrongCode":
-                        # 数字错了，不需要回退页面，直接进入下一次循环
-                        # 下一次循环开头会检查 `is_visible`，如果还在当前页，就会直接开始 OCR
                         print(">>> 正在重试验证码...")
+                        input_box = page.locator('[placeholder="上の画像の数字を入力"]')
+                        input_box.fill("")
                         continue
 
                     if str(e) in ["AuthFailed", "PageExpired"]:
-                        # Token 废了，必须回退
                         print(">>> 正在执行页面回退...")
-                        # 使用 goto 触发重置逻辑 (外层循环开头会处理)
                         page.goto(detail_url if detail_url else 'https://secure.xserver.ne.jp', wait_until='networkidle')
                         continue
                         
-                    print(f"未知错误: {e}")
+                    print(f"未知错误或重试: {e}")
+                    # 如果不是明确的成功，为了保险起见，回退重试
                     page.goto(detail_url if detail_url else 'https://secure.xserver.ne.jp', wait_until='networkidle')
                     continue
             
