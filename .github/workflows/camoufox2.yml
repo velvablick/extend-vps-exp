@@ -42,7 +42,7 @@ jobs:
 
       - name: Run Renewal Script
         # 使用 xvfb-run 启动脚本，模拟真实显示器环境
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python main.py
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python main2.py
         env:
           EMAIL: ${{ secrets.EMAIL }}
           PASSWORD: ${{ secrets.PASSWORD }}
