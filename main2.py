@@ -126,7 +126,7 @@ def run_automation():
                     if hours_text.isdigit() and int(hours_text) > 24:
                         msg = (
                             f"✅ **无需续期**\n"
-                            f"当前剩余时长大于 24 小时，未到续期时间。\n\n"
+                            f"XServer xmgame 当前剩余时长大于 24 小时，未到续期时间。\n\n"
                             f"⏳ **剩余时间**: {hours_text} 小时\n"
                             f"📅 **截止日期**: {date_text}"
                         )
@@ -213,7 +213,7 @@ def run_automation():
                     # 3. 发送最终通知
                     msg = (
                         f"🎉 **续期成功！**\n"
-                        f"VPS 使用期限已延长。\n\n"
+                        f"XServer xmgame 使用期限已延长。\n\n"
                         f"📅 **最新截止日期**: {new_date_text}"
                     )
                     send_notification(msg)
