@@ -1,0 +1,63 @@
+name: Xserver VPS Auto Renewal
+
+on:
+  # 1. 自动触发：每天 UTC 20:30 (北京时间 04:30 / 东京时间 05:30)
+  schedule:
+    - cron: '30 20 * * *'
+  
+  # 2. 手动触发：方便随时测试或补救
+  workflow_dispatch:
+
+jobs:
+  run-renewal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # 防止卡死浪费额度
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip' # 开启缓存，加快每日运行速度
+
+      - name: Install System Dependencies
+        # 安装 Xvfb 和字体，这对绕过 Cloudflare 至关重要
+        run: |
+          sudo apt-get -qq update
+          sudo apt-get -yqq install --no-install-recommends ffmpeg fonts-noto-cjk xvfb
+          sudo npx playwright install-deps firefox
+
+      - name: Install Python Requirements
+        # 确保安装 camoufox 及其 geoip 扩展
+        run: |
+          # 升级 pip 以防万一
+          pip install --upgrade pip
+          # 从文件安装依赖
+          pip install -r requirements.txt
+          # 依然需要执行 camoufox 的初始化
+          python -m camoufox fetch
+
+      - name: Run Renewal Script
+        # 使用 xvfb-run 启动脚本，模拟真实显示器环境
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python main.py
+        env:
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Upload Debug Artifacts
+        # 无论成功失败，都上传录像和截图，保留 7 天
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renewal-logs-${{ github.run_id }}
+          retention-days: 7
+          path: |
+            recording.webm
+            error_debug.png
+            timeout_check.png
