@@ -1,4 +1,4 @@
-name: Xserver VPS Auto Renewal
+name: Xserver xmgame Auto Renewal
 
 on:
   # 1. 自动触发：每天 UTC 20:30 (北京时间 04:30 / 东京时间 05:30)
