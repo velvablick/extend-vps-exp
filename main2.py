@@ -20,7 +20,7 @@ def send_notification(message):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": f"🤖 [Xserver Game/VPS 自动化]\n\n{message}",
+        "text": f"🤖 [Xserver xmgame 自动化]\n\n{message}",
         "parse_mode": "Markdown"
     }
     
