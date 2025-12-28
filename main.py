@@ -3,11 +3,12 @@ import time
 import shutil
 import json
 import requests
+import re  # 新增：引入正则模块
 from urllib.parse import urlparse
 from camoufox.sync_api import Camoufox
 from playwright.sync_api import TimeoutError
 
-# --- 新增：Telegram 通知函数 ---
+# --- Telegram 通知函数 ---
 def send_notification(message):
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     chat_id = os.getenv('TELEGRAM_CHAT_ID')
@@ -26,12 +27,47 @@ def send_notification(message):
     
     try:
         resp = requests.post(url, json=payload, timeout=10)
-        if resp.status_code == 200:
-            print(">>> 通知发送成功！")
-        else:
+        if resp.status_code != 200:
             print(f">>> 通知发送失败: {resp.text}")
     except Exception as e:
         print(f">>> 发送通知时发生网络错误: {e}")
+
+# --- 新增：封装“无需续期”的检测与提取逻辑 ---
+def check_if_renewal_not_needed(page):
+    """
+    检查页面是否存在“利用期限の1日前から...”提示。
+    如果存在，尝试提取其中的日期，并发送通知，返回 True。
+    如果不存在，返回 False。
+    """
+    # 定位包含特定文本的段落 <p>
+    target_locator = page.locator("p").filter(has_text="利用期限の1日前から更新手続きが可能です")
+    
+    if target_locator.is_visible():
+        try:
+            # 获取完整文本（会自动处理 <br> 换行）
+            full_text = target_locator.first.inner_text()
+            print(f">>> 检测到提示文本: {full_text.strip()}")
+            
+            # 使用正则提取日期 (格式：YYYY年MM月DD日)
+            match = re.search(r'(\d{4}年\d{1,2}月\d{1,2}日)', full_text)
+            date_str = match.group(1) if match else "未知日期"
+            
+            msg = (
+                "✅ **检测完毕：当前无需续期**\n"
+                "未满足“过期前1天”的条件。\n\n"
+                f"📅 **请于此日期后重试**: `{date_str}`"
+            )
+            print(f">>> {msg}")
+            send_notification(msg)
+            return True
+        except Exception as e:
+            # 兜底：如果提取失败，至少发送一个基础通知
+            print(f">>> 日期提取出错: {e}")
+            msg = "✅ **检测完毕：当前无需续期**\n(日期提取失败，请登录后台查看)"
+            send_notification(msg)
+            return True
+            
+    return False
 
 def run_automation():
     proxy_env = os.getenv('PROXY_SERVER')
@@ -99,11 +135,8 @@ def run_automation():
             page.get_by_text('引き続き無料VPSの利用を継続する').click()
             page.wait_for_load_state('networkidle')
 
-            # --- 检测点 1：是否无需续期 ---
-            if page.get_by_text("利用期限の1日前から更新手続きが可能です").is_visible():
-                msg = "✅ **检测完毕**\n当前无需续期 (未到期限)。"
-                print(f">>> {msg}")
-                send_notification(msg) # 发送通知
+            # --- 检测点 1：是否无需续期 (调用新封装的函数) ---
+            if check_if_renewal_not_needed(page):
                 return
 
             # --- 验证循环 ---
@@ -124,11 +157,8 @@ def run_automation():
                     page.get_by_text('引き続き無料VPSの利用を継続する').click()
                     page.wait_for_load_state('networkidle')
 
-                    # 重置后再次检测无需续期
-                    if page.get_by_text("利用期限の1日前から更新手続きが可能です").is_visible():
-                        msg = "✅ **检测完毕**\n当前无需续期 (未到期限)。"
-                        print(f">>> {msg}")
-                        send_notification(msg) # 发送通知
+                    # 重置后再次检测无需续期 (检测点 1 的复用)
+                    if check_if_renewal_not_needed(page):
                         return
 
                 # 1. OCR 识别
@@ -192,14 +222,11 @@ def run_automation():
                         if page.get_by_text("利用期限の更新手続きが完了しました。").is_visible():
                             msg = "🎉 **续期成功！**\nVPS 使用期限已延长。"
                             print(f">>> {msg}")
-                            send_notification(msg) # 发送通知
+                            send_notification(msg)
                             return
                         
-                        # --- 检测点 3：无需续期 (可能在点击后才跳出来) ---
-                        if page.get_by_text("利用期限の1日前から更新手続きが可能です").is_visible():
-                            msg = "✅ **检测完毕**\n当前无需续期 (未到期限)。"
-                            print(f">>> {msg}")
-                            send_notification(msg) # 发送通知
+                        # --- 检测点 3：无需续期 (调用新函数) ---
+                        if check_if_renewal_not_needed(page):
                             return
 
                         # 兜底 URL 检查
@@ -244,11 +271,9 @@ def run_automation():
             raise Exception("所有重试均未成功。")
 
         except Exception as e:
-            # --- 检测点 4：最终失败通知 ---
-            error_msg = f"❌ **任务失败**\n请检查 GitHub Actions 日志。\n原因: {str(e)}"
+            error_msg = f"❌ **任务失败**\n原因: {str(e)}"
             print(error_msg)
-            send_notification(error_msg) # 发送错误通知
-            
+            send_notification(error_msg)
             page.screenshot(path="error_debug.png")
             raise e
         finally:
